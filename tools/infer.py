@@ -206,7 +206,7 @@ def infer(args):
 
     model, voc, test_dataset, config = load_model_and_dataset(args)
     import cv2
-    num_samples = 5
+    num_samples = 10
     for i in tqdm(range(num_samples)):
         dataset_idx = random.randint(0, len(voc))
         im_tensor, target, fname = voc[dataset_idx]
