@@ -6,7 +6,7 @@ import yaml
 import random
 from tqdm import tqdm
 from model.detr import DETR
-from dataset.voc import VOCDataset
+from dataset.food67 import Food67Dataset
 from torch.utils.data.dataloader import DataLoader
 from torch.optim.lr_scheduler import MultiStepLR
 
