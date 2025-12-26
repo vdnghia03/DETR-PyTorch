@@ -39,9 +39,14 @@ def train(args):
     random.seed(seed)
 
     # --- 2. DATASET ---
-    voc = VOCDataset('train',
-                     im_sets=dataset_config['train_im_sets'],
-                     im_size=dataset_config['im_size'])
+    # voc = VOCDataset('train',
+    #                  im_sets=dataset_config['train_im_sets'],
+    #                  im_size=dataset_config['im_size'])
+
+    # Tìm dòng khởi tạo dataset cũ và thay bằng dòng này:
+    voc = Food67Dataset('train',
+                    im_sets=dataset_config['train_im_sets'],
+                    im_size=dataset_config['im_size'])
     
     train_dataset = DataLoader(voc,
                                batch_size=train_config['batch_size'],
