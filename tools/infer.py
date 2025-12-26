@@ -7,7 +7,7 @@ from tqdm import tqdm
 from model.detr import DETR
 import numpy as np
 import cv2
-from dataset.voc import VOCDataset
+from dataset.food67 import Food67Dataset
 from torch.utils.data.dataloader import DataLoader
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
