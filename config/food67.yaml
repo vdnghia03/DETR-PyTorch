@@ -1,0 +1,41 @@
+dataset_params:
+  # Trỏ tới thư mục chứa ảnh. 
+  # Lưu ý: train.py truyền list này vào dataset.
+  train_im_sets: ['dataset/images/train'] 
+  test_im_sets: ['dataset/images/valid']  # Dùng tập valid để đánh giá
+  num_classes : 69      # 68 món + 1 background
+  bg_class_idx : 0
+  im_size : 640
+
+model_params:
+  im_channels : 3
+  backbone_channels : 512
+  d_model : 256
+  num_queries : 100     # Tăng lên 100 vì 68 món ăn có thể xuất hiện dày đặc
+  freeze_backbone : False # Nên để False để ResNet học lại đặc trưng món ăn
+  encoder_layers : 6    # Tăng lên 6 lớp cho mạnh (mặc định DETR) hoặc giữ 4 tùy GPU
+  encoder_attn_heads : 8
+  decoder_layers : 6    # Tăng lên 6 lớp
+  decoder_attn_heads : 8
+  dropout_prob : 0.1
+  ff_inner_dim : 2048
+  cls_cost_weight : 1.
+  l1_cost_weight : 5.
+  giou_cost_weight : 2.
+  bg_class_weight : 0.1
+  nms_threshold : 0.5
+
+train_params:
+  task_name: 'food67_task'
+  eval_score_threshold: 0.05
+  infer_score_threshold: 0.5
+  use_nms_eval : False
+  use_nms_infer : True
+  seed: 42
+  acc_steps: 1
+  num_epochs: 2
+  batch_size: 4         # Tùy chỉnh theo VRAM
+  lr_steps: [ 70, 90 ]
+  lr: 0.0001
+  log_steps : 10
+  ckpt_name: 'detr_food67.pth'
