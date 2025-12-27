@@ -1,59 +1,52 @@
+%%writefile tools/train.py
 import torch
 import argparse
 import os
 import numpy as np
 import yaml
 import random
+import time  # <--- Import Time
 from tqdm import tqdm
 from model.detr import DETR
 from dataset.food67 import Food67Dataset
 from torch.utils.data.dataloader import DataLoader
 from torch.optim.lr_scheduler import MultiStepLR
 
-# Chọn thiết bị
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-if torch.backends.mps.is_available():
-    device = torch.device('mps')
-    print('Using mps')
 
 def collate_function(data):
     return tuple(zip(*data))
 
 def train(args):
-    # --- 1. CONFIG LOADING ---
-    with open(args.config_path, 'r') as file:
-        try:
-            config = yaml.safe_load(file)
-        except yaml.YAMLError as exc:
-            print(exc)
-    print(config)
+    # --- [NEW LOGIC] 1. BẮT ĐẦU TÍNH GIỜ ---
+    start_time = time.time()
+    # Kaggle limit 12h = 43200s. Dừng ở 11.5h (41400s) để an toàn
+    TIME_LIMIT = 11.5 * 3600 
+    print(f"Training started. Will auto-stop after {TIME_LIMIT/3600:.1f} hours.")
 
+    with open(args.config_path, 'r') as file:
+        config = yaml.safe_load(file)
+    
     dataset_config = config['dataset_params']
     train_config = config['train_params']
     model_config = config['model_params']
 
-    # Thiết lập Seed để tái lập kết quả
     seed = train_config['seed']
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
 
-    # --- 2. DATASET ---
-    # voc = VOCDataset('train',
-    #                  im_sets=dataset_config['train_im_sets'],
-    #                  im_size=dataset_config['im_size'])
-
-    # Tìm dòng khởi tạo dataset cũ và thay bằng dòng này:
-    voc = Food67Dataset('train',
-                    im_sets=dataset_config['train_im_sets'],
-                    im_size=dataset_config['im_size'])
+    train_dataset_raw = Food67Dataset(
+        split='train',
+        im_sets=dataset_config['train_im_sets'],
+        im_size=dataset_config['im_size']
+    )
     
-    train_dataset = DataLoader(voc,
+    train_dataset = DataLoader(train_dataset_raw,
                                batch_size=train_config['batch_size'],
                                shuffle=True,
                                collate_fn=collate_function)
 
-    # --- 3. MODEL SETUP ---
     model = DETR(
         config=model_config,
         num_classes=dataset_config['num_classes'],
@@ -62,121 +55,119 @@ def train(args):
     model.to(device)
     model.train()
 
-    # Load checkpoint nếu có (Resume Training)
-    ckpt_path = os.path.join(train_config['task_name'], train_config['ckpt_name'])
-    if os.path.exists(ckpt_path):
-        state_dict = torch.load(ckpt_path, map_location=device)
-        model.load_state_dict(state_dict)
-        print('Loading checkpoint as one exists')
-
+    # Tạo folder output (nếu chưa có)
     if not os.path.exists(train_config['task_name']):
         os.mkdir(train_config['task_name'])
 
-    # --- 4. OPTIMIZER TỐI ƯU (BÍ MẬT SỐ 1) ---
-    # Tách tham số: Backbone học chậm (0.1x), Transformer học thường (1x)
+    # --- [NEW LOGIC] 2. SMART CHECKPOINT LOADING ---
+    # Đường dẫn file trong thư mục đang chạy (Working Dir)
+    ckpt_path_working = os.path.join(train_config['task_name'], train_config['ckpt_name'])
+    
+    # Đường dẫn file từ Input Dataset (Resume Path từ config)
+    ckpt_path_input = train_config.get('resume_path', None)
+
+    start_epoch = 0
+
+    # ƯU TIÊN 1: Load từ Working Dir (Mới nhất trong session hiện tại)
+    if os.path.exists(ckpt_path_working):
+        print(f"🔄 Resuming from WORKING directory: {ckpt_path_working}")
+        state_dict = torch.load(ckpt_path_working, map_location=device)
+        model.load_state_dict(state_dict)
+    
+    # ƯU TIÊN 2: Load từ Input Dataset (Model cũ upload lên)
+    elif ckpt_path_input and os.path.exists(ckpt_path_input):
+        print(f"🔄 Resuming from INPUT DATASET: {ckpt_path_input}")
+        state_dict = torch.load(ckpt_path_input, map_location=device)
+        model.load_state_dict(state_dict)
+    
+    # ƯU TIÊN 3: Train từ đầu
+    else:
+        print("✨ No checkpoint found. Training from scratch (Pretrained ResNet).")
+
+    # Optimizer setup (Tách LR)
     backbone_params = []
     transformer_params = []
-    
     for n, p in model.named_parameters():
-        if not p.requires_grad:
-            continue
-        if 'backbone' in n:
+        if "backbone" in n and p.requires_grad:
             backbone_params.append(p)
-        else:
+        elif p.requires_grad:
             transformer_params.append(p)
 
     param_dicts = [
-        {'params': backbone_params, 'lr': train_config['lr'] * 0.1}, # Backbone LR nhỏ
-        {'params': transformer_params, 'lr': train_config['lr']}     # Transformer LR chuẩn
+        {"params": backbone_params, "lr": train_config['lr'] * 0.1},
+        {"params": transformer_params, "lr": train_config['lr']},
     ]
-
+    
     optimizer = torch.optim.AdamW(param_dicts, weight_decay=1e-4)
-
-    lr_scheduler = MultiStepLR(optimizer,
-                               milestones=train_config['lr_steps'],
-                               gamma=0.1)
+    lr_scheduler = MultiStepLR(optimizer, milestones=train_config['lr_steps'], gamma=0.1)
 
     acc_steps = train_config['acc_steps']
     num_epochs = train_config['num_epochs']
     steps = 0
     
-    # --- 5. TRAINING LOOP ---
-    print("Start Training...")
+    print("Start Training Loop...")
     for i in range(num_epochs):
-        detr_classification_losses = []
-        detr_localization_losses = []
+        loss_cls_list = []
+        loss_loc_list = []
         
-        # Reset Gradient đầu epoch
-        optimizer.zero_grad() 
-
-        for idx, (ims, targets, _) in enumerate(tqdm(train_dataset)):
-            # A. Chuẩn bị dữ liệu
+        optimizer.zero_grad()
+        
+        # Dùng tqdm để hiện progress bar
+        pbar = tqdm(train_dataset, desc=f"Epoch {i+1}/{num_epochs}")
+        for idx, (ims, targets, _) in enumerate(pbar):
             for target in targets:
                 target['boxes'] = target['boxes'].float().to(device)
                 target['labels'] = target['labels'].long().to(device)
+            
             images = torch.stack([im.float().to(device) for im in ims], dim=0)
 
-            # B. Forward Pass & Tính Loss
-            # Model DETR tự chạy Hungarian Matching bên trong khi có targets
             output = model(images, targets)
             batch_losses = output['loss']
-
-            # Tổng hợp loss từ Deep Supervision (cộng cả 4 lớp)
+            
             loss_cls = sum(batch_losses['classification'])
             loss_bbox = sum(batch_losses['bbox_regression'])
             total_loss = loss_cls + loss_bbox
-
-            # C. Gradient Accumulation (Chia nhỏ loss)
+            
             loss = total_loss / acc_steps
             loss.backward()
+            
+            loss_cls_list.append(loss_cls.item())
+            loss_loc_list.append(loss_bbox.item())
 
-            # Logging
-            detr_classification_losses.append(loss_cls.item())
-            detr_localization_losses.append(loss_bbox.item())
-
-            # D. Bước Update (Chỉ chạy khi tích lũy đủ bước)
             if (idx + 1) % acc_steps == 0:
-                # --- TỐI ƯU 2: GRADIENT CLIPPING (BÍ MẬT SỐ 2) ---
-                # Cắt ngọn đạo hàm để tránh nổ loss (NaN)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.1)
-                
                 optimizer.step()
                 optimizer.zero_grad()
             
-            # Print log mỗi N bước
+            # Update progress bar text
             if steps % train_config['log_steps'] == 0:
-                current_lr = optimizer.param_groups[1]['lr'] # Lấy LR của Transformer
-                print(f' Step {steps}: Cls Loss: {np.mean(detr_classification_losses):.4f} | '
-                      f'Loc Loss: {np.mean(detr_localization_losses):.4f} | LR: {current_lr:.1e}')
-            
-            if torch.isnan(total_loss):
-                print('Error: Loss is becoming NaN. Exiting.')
-                exit(0)
+                pbar.set_postfix({
+                    'Cls': f"{np.mean(loss_cls_list[-10:]):.4f}",
+                    'Loc': f"{np.mean(loss_loc_list[-10:]):.4f}"
+                })
             
             steps += 1
 
-        # --- TỐI ƯU 3: XỬ LÝ SỐ DƯ (Leftover Batches) ---
-        # Nếu số batch không chia hết cho acc_steps, update nốt phần còn dư
         if len(train_dataset) % acc_steps != 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.1)
             optimizer.step()
             optimizer.zero_grad()
 
-        # E. Cập nhật Scheduler cuối epoch
         lr_scheduler.step()
+        print(f"Finished Epoch {i+1}. Saving model...")
         
-        print(f'Finished Epoch {i+1}')
-        print(f'Avg Epoch Loss -> Cls: {np.mean(detr_classification_losses):.4f} | '
-              f'Loc: {np.mean(detr_localization_losses):.4f}')
+        # Save Model vào Working Dir
+        torch.save(model.state_dict(), ckpt_path_working)
         
-        # Save Checkpoint
-        torch.save(model.state_dict(), ckpt_path)
-
-    print('Done Training...')
+        # --- [NEW LOGIC] 3. KIỂM TRA THỜI GIAN ---
+        elapsed_time = time.time() - start_time
+        if elapsed_time > TIME_LIMIT:
+            print(f"⚠️ Time limit reached ({elapsed_time/3600:.2f} hours). Stopping training safely.")
+            print("Model has been saved. Please download output or commit dataset.")
+            break # Thoát vòng lặp Epoch -> Kết thúc train
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Arguments for detr training')
-    parser.add_argument('--config', dest='config_path',
-                        default='config/voc.yaml', type=str)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', dest='config_path', default='config/food67.yaml', type=str)
     args = parser.parse_args()
     train(args)
