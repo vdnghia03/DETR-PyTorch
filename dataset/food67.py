@@ -1,12 +1,12 @@
+
 import torch
 import os
 import glob
 import cv2
 import numpy as np
 from torch.utils.data import Dataset
-# Import v2 và tv_tensors để xử lý Box
-import torchvision.transforms.v2 as T
-from torchvision import tv_tensors 
+from torchvision import transforms
+import random
 
 class Food67Dataset(Dataset):
     def __init__(self, split, im_sets, im_size=640):
@@ -14,7 +14,7 @@ class Food67Dataset(Dataset):
         self.im_size = im_size
         self.images = []
         
-        # 1. Load ảnh (Giữ nguyên logic cũ)
+        # 1. Load danh sách ảnh
         for folder_path in im_sets:
             if not os.path.exists(folder_path):
                 print(f"Warning: Path {folder_path} does not exist!")
@@ -22,61 +22,35 @@ class Food67Dataset(Dataset):
             for ext in ['*.jpg', '*.jpeg', '*.png', '*.JPG']:
                 self.images.extend(glob.glob(os.path.join(folder_path, ext)))
         self.images = sorted(self.images)
-        
-        # 2. Định nghĩa Class (Giữ nguyên)
+
+        # 2. Định nghĩa Class (69 class)
         self.idx2label = [
             "__background__", 
-            "Bánh canh", "Bánh chưng", "Bánh cuốn", "Bánh khọt", "Bánh mì", "Bánh tráng",
-            "Bánh tráng trộn", "Bánh xèo", "Bò kho", "Bò lá lốt", "Bông cải", "Bún",
-            "Bún bò Huế", "Bún chả", "Bún đậu", "Bún mắm", "Bún riêu", "Cá", "Cà chua",
-            "Cà pháo", "Cà rốt", "Canh", "Chả", "Chả giò", "Chanh", "Cơm", "Cơm tấm",
-            "Con người", "Củ kiệu", "Cua", "Đậu hũ", "Dưa chua", "Dưa leo",
-            "Gỏi cuốn", "Hamburger", "Heo quay", "Hủ tiếu", "Khổ qua thịt", "Khoai tây chiên",
-            "Lẩu", "Lòng heo", "Mì", "Mực", "Nấm", "Ốc", "Ớt chuông", "Phở", "Phô mai",
-            "Rau", "Salad", "Thịt bò", "Thịt gà", "Thịt heo", "Thịt kho", "Thịt nướng",
-            "Tôm", "Trứng", "Xôi", "Bánh bèo", "Cao lầu", "Mì Quảng",
-            "Cơm chiên Dương Châu", "Bún chả cá", "Cơm chiên gà", "Cháo lòng",
-            "Nộm hoa chuối", "Nui xào bò", "Súp cua"
+            "Banh canh", "Banh chung", "Banh cuon", "Banh khot", "Banh mi", "Banh trang",
+            "Banh trang tron", "Banh xeo", "Bo kho", "Bo la lot", "Bong cai", "Bun",
+            "Bun bo Hue", "Bun cha", "Bun dau", "Bun mam", "Bun rieu", "Ca", "Ca chua",
+            "Ca phao", "Ca rot", "Canh", "Cha", "Cha gio", "Chanh", "Com", "Com tam",
+            "Con nguoi", "Cu kieu", "Cua", "Dau hu", "Dua chua", "Dua leo",
+            "Goi cuon", "Hamburger", "Heo quay", "Hu tieu", "Kho qua thit", "Khoai tay chien",
+            "Lau", "Long heo", "Mi", "Muc", "Nam", "Oc", "Ot chuong", "Pho", "Pho mai",
+            "Rau", "Salad", "Thit bo", "Thit ga", "Thit heo", "Thit kho", "Thit nuong",
+            "Tom", "Trung", "Xoi", "Banh beo", "Cao lau", "Mi Quang",
+            "Com chien Duong Chau", "Bun cha ca", "Com chien ga", "Chao long",
+            "Nom hoa chuoi", "Nui xao bo", "Sup cua"
         ]
-        self.label2idx = {label: idx for idx, label in enumerate(self.idx2label)}
-
-        # 3. Cấu hình Transforms (Đoạn bạn thích đây!)
-        # Mean/Std chuẩn của ImageNet
-        self.imagenet_mean = [0.485, 0.456, 0.406]
-        self.imagenet_std = [0.229, 0.224, 0.225]
-        # Mean để fill màu khi zoom out (màu xám trung tính)
-        self.im_mean = [123.0, 117.0, 104.0] 
-
-        self.transforms = {
-            'train': T.Compose([
-                T.RandomHorizontalFlip(p=0.5),
-                # T.RandomZoomOut(fill=self.im_mean), # Có thể bật lại nếu muốn
-                # T.RandomIoUCrop(),                 # Có thể bật lại nếu muốn augmentation mạnh
-                T.RandomPhotometricDistort(),        # Chỉnh màu sắc, độ sáng
-                T.Resize(size=(self.im_size, self.im_size)),
-                # Hàm sanitize giúp lọc bỏ các box bị lỗi sau khi crop/resize
-                T.SanitizeBoundingBoxes(), 
-                T.ToPureTensor(),
-                T.ToDtype(torch.float32, scale=True), # Chia 255
-                T.Normalize(mean=self.imagenet_mean, std=self.imagenet_std)
-            ]),
-            'test': T.Compose([
-                T.Resize(size=(self.im_size, self.im_size)),
-                T.ToPureTensor(),
-                T.ToDtype(torch.float32, scale=True),
-                T.Normalize(mean=self.imagenet_mean, std=self.imagenet_std)
-            ]),
-        }
         
-        # Mapping split tên 'valid' sang key 'test' trong transforms
-        self.transform_key = 'train' if split == 'train' else 'test'
-
-        print(f"Loaded {len(self.images)} images for split '{split}'")
+        # Transform ảnh
+        self.normalize = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ])
 
     def __len__(self):
         return len(self.images)
-
-    def load_yolo_label(self, img_path, img_h, img_w):
+    def load_yolo_label_as_xyxy(self, img_path):
+        """
+        Đọc YOLO (cx, cy, w, h) -> Chuyển thành (x1, y1, x2, y2) Normalized
+        """
         label_path = img_path.replace('images', 'labels').rsplit('.', 1)[0] + '.txt'
         boxes = []
         labels = []
@@ -88,23 +62,22 @@ class Food67Dataset(Dataset):
                 parts = line.strip().split()
                 if len(parts) >= 5:
                     cls_id = int(parts[0])
-                    labels.append(cls_id + 1) # Class + 1 vì Background=0
+                    labels.append(cls_id + 1) # Class + 1
                     
-                    # YOLO: cx, cy, w, h (normalized)
+                    # 1. Đọc YOLO (Normalized Center)
                     cx, cy, w, h = map(float, parts[1:5])
                     
-                    # Chuyển sang Absolute XYXY (x1, y1, x2, y2)
-                    # Lý do: Transform v2 làm việc tốt nhất với XYXY tuyệt đối
-                    x_c = cx * img_w
-                    y_c = cy * img_h
-                    w_abs = w * img_w
-                    h_abs = h * img_h
+                    # 2. Chuyển sang XYXY Normalized
+                    x1 = cx - w / 2
+                    y1 = cy - h / 2
+                    x2 = cx + w / 2
+                    y2 = cy + h / 2
                     
-                    x1 = x_c - (w_abs / 2)
-                    y1 = y_c - (h_abs / 2)
-                    x2 = x_c + (w_abs / 2)
-                    y2 = y_c + (h_abs / 2)
-                    
+                    # 3. Clip an toàn về 0-1
+                    x1 = np.clip(x1, 0, 1)
+                    y1 = np.clip(y1, 0, 1)
+                    x2 = np.clip(x2, 0, 1)
+                    y2 = np.clip(y2, 0, 1)
                     boxes.append([x1, y1, x2, y2])
                     
         return torch.tensor(boxes, dtype=torch.float32), torch.tensor(labels, dtype=torch.long)
@@ -112,93 +85,48 @@ class Food67Dataset(Dataset):
     def __getitem__(self, idx):
         img_path = self.images[idx]
         
-        # 1. Đọc ảnh bằng TVTensors (giúp PyTorch hiểu đây là Ảnh)
+        # 1. Đọc ảnh
         im = cv2.imread(img_path)
         if im is None:
-            im = np.zeros((640, 640, 3), dtype=np.uint8)
-        im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
-        h, w = im.shape[:2]
-        
-        # Chuyển ảnh sang TVTensor Image
-        # Shape: (C, H, W)
-        im_tv = tv_tensors.Image(torch.from_numpy(im).permute(2, 0, 1))
+            im = np.zeros((self.im_size, self.im_size, 3), dtype=np.uint8)
+            boxes, labels = torch.zeros((0, 4)), torch.zeros((0,), dtype=torch.long)
+        else:
+            im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
+            
+            # Load nhãn dạng XYXY
+            boxes, labels = self.load_yolo_label_as_xyxy(img_path)
 
-        # 2. Đọc Label & Wrap vào BoundingBoxes
-        boxes, labels = self.load_yolo_label(img_path, h, w)
+            # Augmentation Flip (Nếu lật ảnh thì lật box x1, x2)
+            if self.split == 'train' and random.random() > 0.5:
+                im = cv2.flip(im, 1) # Flip ảnh
+                if len(boxes) > 0:
+                    # Flip tọa độ X: x1_new = 1.0 - x2_old; x2_new = 1.0 - x1_old
+                    old_x1 = boxes[:, 0].clone()
+                    old_x2 = boxes[:, 2].clone()
+                    boxes[:, 0] = 1.0 - old_x2
+                    boxes[:, 2] = 1.0 - old_x1
+           # Resize ảnh (Box normalized giữ nguyên tỉ lệ)
+            im = cv2.resize(im, (self.im_size, self.im_size))
         
-        # Quan trọng: Phải bọc boxes vào tv_tensors.BoundingBoxes
-        # để transforms.v2 biết đây là hộp cần được resize/flip theo ảnh
+        # 2. Chuẩn hóa ảnh
+        im_tensor = self.normalize(im)
+        
+        # 3. Lọc box rác
         if len(boxes) > 0:
-            boxes_tv = tv_tensors.BoundingBoxes(
-                boxes, 
-                format="XYXY", 
-                canvas_size=(h, w)
-            )
-        else:
-            # Nếu không có box nào, tạo dummy rỗng
-            boxes_tv = tv_tensors.BoundingBoxes(
-                torch.zeros((0, 4)), 
-                format="XYXY", 
-                canvas_size=(h, w)
-            )
+            # Tính width, height của box để lọc
+            ws = boxes[:, 2] - boxes[:, 0]
+            hs = boxes[:, 3] - boxes[:, 1]
+            keep = (ws > 0.01) & (hs > 0.01)
+            boxes = boxes[keep]
+            labels = labels[keep]
 
-        # 3. Tạo dictionary target
+        # 4. Đóng gói target
         target = {
-            "boxes": boxes_tv,
-            "labels": labels,
-            "image_id": torch.tensor([idx]),
-            # Thêm dummy fields để transform không lỗi (nếu dùng Sanitize nâng cao)
-            "difficult": torch.zeros_like(labels) 
-        }
-
-        # 4. ÁP DỤNG TRANSFORMS (Magic happens here!)
-        # Transform v2 nhận vào (Image, Target Dict) và trả về (Image, Target Dict) đã biến đổi
-        im_transformed, target_transformed = self.transforms[self.transform_key](im_tv, target)
-
-        # 5. Chuyển đổi ngược lại format cho DETR
-        # DETR cần box dạng: (cx, cy, w, h) chuẩn hóa [0-1]
-        
-        final_boxes = target_transformed['boxes'] # Đang là XYXY Absolute sau khi resize
-        final_labels = target_transformed['labels']
-        
-        if len(final_boxes) > 0:
-            # Lấy kích thước ảnh sau khi resize (thường là 640x640)
-            # im_transformed shape là (C, H, W)
-            new_h, new_w = im_transformed.shape[-2:]
-            
-            # Convert XYXY -> CXCYWH
-            # boxes là Tensor, ta dùng phép toán tensor
-            x1 = final_boxes[:, 0]
-            y1 = final_boxes[:, 1]
-            x2 = final_boxes[:, 2]
-            y2 = final_boxes[:, 3]
-            
-            w_box = x2 - x1
-            h_box = y2 - y1
-            cx = x1 + w_box / 2
-            cy = y1 + h_box / 2
-            
-            # Chuẩn hóa về 0-1
-            final_boxes_norm = torch.stack([
-                cx / new_w,
-                cy / new_h,
-                w_box / new_w,
-                h_box / new_h
-            ], dim=1)
-            
-            # Clip về [0, 1] để an toàn
-            final_boxes_norm = torch.clamp(final_boxes_norm, 0, 1)
-        else:
-            final_boxes_norm = torch.zeros((0, 4), dtype=torch.float32)
-
-        # 6. Đóng gói kết quả cuối cùng
-        final_target = {
-            'boxes': final_boxes_norm,
-            'labels': final_labels,
-            'orig_size': torch.tensor([h, w]),
+            'boxes': boxes, # Dạng x1, y1, x2, y2 (Normalized)
+            'labels': labels,
+            'orig_size': torch.tensor([self.im_size, self.im_size]),
             'size': torch.tensor([self.im_size, self.im_size]),
             'image_id': torch.tensor([idx]),
-            'difficult': target['difficult']
+            'difficult': torch.zeros_like(labels)
         }
-
-        return im_transformed, final_target, img_path
+        return im_tensor, target, img_path
