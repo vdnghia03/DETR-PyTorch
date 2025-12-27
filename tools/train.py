@@ -1,4 +1,4 @@
-%%writefile tools/train.py
+
 import torch
 import argparse
 import os
